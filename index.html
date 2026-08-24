@@ -17,7 +17,7 @@
     }
 
     .container {
-      max-width: 1400px;
+      max-width: 1500px;
       margin: 0 auto;
       background: white;
       padding: 20px;
@@ -46,12 +46,13 @@
       font-weight: bold;
     }
 
-    select {
+    input, select {
       padding: 10px;
       border: 1px solid #ccc;
       border-radius: 8px;
       font-size: 14px;
       width: 100%;
+      box-sizing: border-box;
     }
 
     .stats {
@@ -79,9 +80,9 @@
       margin-top: 6px;
     }
 
-    #chart, #candleChart {
+    #chart {
       width: 100%;
-      height: 500px;
+      height: 520px;
       margin-top: 20px;
     }
 
@@ -100,6 +101,16 @@
 
     th {
       background: #f2f5f9;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+
+    .table-wrap {
+      max-height: 600px;
+      overflow: auto;
+      border: 1px solid #ddd;
+      border-radius: 10px;
     }
 
     .hint {
@@ -120,6 +131,11 @@
       margin-top: 10px;
     }
 
+    .section-title {
+      margin-top: 30px;
+      margin-bottom: 10px;
+    }
+
     @media (max-width: 900px) {
       .controls, .stats {
         grid-template-columns: 1fr;
@@ -131,13 +147,18 @@
   <div class="container">
     <h1>AFL Fantasy Score Tracker</h1>
     <p class="hint">
-      This page loads your CSV automatically from the GitHub repo and shows DreamTeamPoints trends by player.
+      Search a player to view their DreamTeamPoints trend and see the most consistent players across all seasons.
     </p>
 
     <div id="status" class="loading">Loading CSV data...</div>
     <div id="message" class="error"></div>
 
     <div class="controls">
+      <div class="control-group">
+        <label for="playerSearch">Search Player</label>
+        <input type="text" id="playerSearch" placeholder="Type a player's name..." disabled />
+      </div>
+
       <div class="control-group">
         <label for="playerSelect">Choose Player</label>
         <select id="playerSelect" disabled>
@@ -149,6 +170,17 @@
         <label for="seasonSelect">Choose Season</label>
         <select id="seasonSelect" disabled>
           <option value="all">All Seasons</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label for="minGames">Minimum Games for Top Consistency</label>
+        <select id="minGames">
+          <option value="10">10</option>
+          <option value="20">20</option>
+          <option value="30" selected>30</option>
+          <option value="40">40</option>
+          <option value="50">50</option>
         </select>
       </div>
     </div>
@@ -173,24 +205,65 @@
     </div>
 
     <div id="chart"></div>
-    <div id="candleChart"></div>
 
-    <h2>Player Match History</h2>
-    <div id="tableContainer"></div>
+    <h2 class="section-title">Top Consistent Players</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Player</th>
+            <th>Games</th>
+            <th>Average</th>
+            <th>Median</th>
+            <th>Volatility</th>
+            <th>% 80+</th>
+            <th>% 90+</th>
+            <th>% 100+</th>
+            <th>Season Range</th>
+            <th>Consistency Score</th>
+          </tr>
+        </thead>
+        <tbody id="consistencyTableBody">
+          <tr><td colspan="10">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 class="section-title">Player Match History</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>MatchId</th>
+            <th>Year</th>
+            <th>Round</th>
+            <th>Player</th>
+            <th>Team</th>
+            <th>DreamTeamPoints</th>
+          </tr>
+        </thead>
+        <tbody id="matchTableBody">
+          <tr><td colspan="6">Select a player to view match history.</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 
   <script>
-    // Change this if your CSV has a different name or path
     const CSV_PATH = "afl_fantasy_data.csv";
 
     let allData = [];
+    let rankedPlayers = [];
 
+    const playerSearch = document.getElementById("playerSearch");
     const playerSelect = document.getElementById("playerSelect");
     const seasonSelect = document.getElementById("seasonSelect");
+    const minGamesSelect = document.getElementById("minGames");
     const message = document.getElementById("message");
     const status = document.getElementById("status");
     const stats = document.getElementById("stats");
-    const tableContainer = document.getElementById("tableContainer");
+    const matchTableBody = document.getElementById("matchTableBody");
+    const consistencyTableBody = document.getElementById("consistencyTableBody");
 
     function showMessage(text) {
       message.textContent = text || "";
@@ -200,7 +273,6 @@
       const s = String(matchId).trim();
       const year = s.substring(0, 4);
       const round = s.substring(4, 6);
-
       return {
         year,
         round,
@@ -235,6 +307,13 @@
       return Math.sqrt(variance);
     }
 
+    function minMax(series) {
+      const min = Math.min(...series);
+      const max = Math.max(...series);
+      if (min === max) return series.map(() => 0);
+      return series.map(v => (v - min) / (max - min));
+    }
+
     function buildPlayerOptions(data) {
       const players = [...new Set(data.map(row => row.Player).filter(Boolean))].sort();
       playerSelect.innerHTML = "";
@@ -247,8 +326,11 @@
       });
 
       playerSelect.disabled = false;
+      playerSearch.disabled = false;
+
       if (players.length > 0) {
         playerSelect.value = players[0];
+        playerSearch.value = "";
       }
     }
 
@@ -267,34 +349,22 @@
       seasonSelect.value = "all";
     }
 
-    function renderTable(playerRows) {
-      if (!playerRows.length) {
-        tableContainer.innerHTML = "<p>No data available.</p>";
+    function renderMatchTable(rows) {
+      if (!rows.length) {
+        matchTableBody.innerHTML = '<tr><td colspan="6">No data found for selection.</td></tr>';
         return;
       }
 
-      const headers = ["MatchId", "Year", "Round", "Player", "Team", "DreamTeamPoints"];
-      let html = "<table><thead><tr>";
-
-      headers.forEach(h => {
-        html += `<th>${h}</th>`;
-      });
-
-      html += "</tr></thead><tbody>";
-
-      playerRows.forEach(row => {
-        html += "<tr>";
-        html += `<td>${row.MatchId ?? ""}</td>`;
-        html += `<td>${row.Year ?? ""}</td>`;
-        html += `<td>${row.Round ?? ""}</td>`;
-        html += `<td>${row.Player ?? ""}</td>`;
-        html += `<td>${row.Team ?? ""}</td>`;
-        html += `<td>${row.DreamTeamPoints ?? ""}</td>`;
-        html += "</tr>";
-      });
-
-      html += "</tbody></table>";
-      tableContainer.innerHTML = html;
+      matchTableBody.innerHTML = rows.map(row => `
+        <tr>
+          <td>${row.MatchId ?? ""}</td>
+          <td>${row.Year ?? ""}</td>
+          <td>${row.Round ?? ""}</td>
+          <td>${row.Player ?? ""}</td>
+          <td>${row.Team ?? ""}</td>
+          <td>${row.DreamTeamPoints ?? ""}</td>
+        </tr>
+      `).join("");
     }
 
     function updateStats(points) {
@@ -304,7 +374,7 @@
       document.getElementById("volStat").textContent = points.length ? stdDev(points).toFixed(1) : "-";
     }
 
-    function renderCharts() {
+    function getFilteredPlayerRows() {
       const selectedPlayer = playerSelect.value;
       const selectedSeason = seasonSelect.value;
 
@@ -319,17 +389,24 @@
         return a.Round.localeCompare(b.Round);
       });
 
+      return rows;
+    }
+
+    function renderChart() {
+      const rows = getFilteredPlayerRows();
       const x = rows.map(r => r.yearRoundLabel);
       const y = rows.map(r => r.DreamTeamPoints);
 
       const rolling3 = rollingMean(y, 3);
-      const rolling5 = rollingMean(y, 5);
       const rolling8 = rollingMean(y, 8);
+      const rolling20 = rollingMean(y, 20);
 
       updateStats(y);
-      renderTable(rows);
+      renderMatchTable(rows);
 
-      const lineData = [
+      const selectedPlayer = playerSelect.value || "Player";
+
+      const data = [
         {
           x,
           y,
@@ -343,28 +420,28 @@
           y: rolling3,
           type: "scatter",
           mode: "lines",
-          name: "3-game average",
+          name: "Last 3 average",
           line: { width: 2, dash: "dot" }
-        },
-        {
-          x,
-          y: rolling5,
-          type: "scatter",
-          mode: "lines",
-          name: "5-game average",
-          line: { width: 2, dash: "dash" }
         },
         {
           x,
           y: rolling8,
           type: "scatter",
           mode: "lines",
-          name: "8-game average",
+          name: "Last 8 average",
+          line: { width: 2, dash: "dash" }
+        },
+        {
+          x,
+          y: rolling20,
+          type: "scatter",
+          mode: "lines",
+          name: "Last 20 average",
           line: { width: 2, dash: "longdash" }
         }
       ];
 
-      const lineLayout = {
+      const layout = {
         title: `${selectedPlayer} - DreamTeamPoints Trend`,
         xaxis: { title: "Year-Round" },
         yaxis: { title: "DreamTeamPoints" },
@@ -372,50 +449,119 @@
         hovermode: "x unified"
       };
 
-      Plotly.newPlot("chart", lineData, lineLayout, { responsive: true });
-
-      // Stock-style candlestick chart using synthetic OHLC from the scores
-      const open = y.map((val, i) => i === 0 ? val : y[i - 1]);
-      const high = y.map((val, i) => Math.max(val, open[i]));
-      const low = y.map((val, i) => Math.min(val, open[i]));
-      const close = y;
-
-      const candleData = [
-        {
-          x,
-          open,
-          high,
-          low,
-          close,
-          type: "candlestick",
-          name: selectedPlayer
-        }
-      ];
-
-      const candleLayout = {
-        title: `${selectedPlayer} - Stock Style Score Chart`,
-        xaxis: { title: "Year-Round" },
-        yaxis: { title: "DreamTeamPoints" },
-        template: "plotly_white"
-      };
-
-      Plotly.newPlot("candleChart", candleData, candleLayout, { responsive: true });
+      Plotly.newPlot("chart", data, layout, { responsive: true });
     }
 
-    playerSelect.addEventListener("change", renderCharts);
-    seasonSelect.addEventListener("change", renderCharts);
+    function calculateConsistencyTable(data) {
+      const players = [...new Set(data.map(row => row.Player).filter(Boolean))];
+
+      let rows = players.map(player => {
+        const playerScores = data.filter(r => r.Player === player).map(r => r.DreamTeamPoints);
+        const seasons = [...new Set(data.filter(r => r.Player === player).map(r => r.Year))];
+        const seasonAverages = seasons.map(season => {
+          const seasonScores = data
+            .filter(r => r.Player === player && r.Year === season)
+            .map(r => r.DreamTeamPoints);
+
+          return seasonScores.length ? seasonScores.reduce((a, b) => a + b, 0) / seasonScores.length : 0;
+        });
+
+        const avg = playerScores.reduce((a, b) => a + b, 0) / playerScores.length;
+        const med = median(playerScores);
+        const vol = stdDev(playerScores);
+        const pct80 = (playerScores.filter(s => s >= 80).length / playerScores.length) * 100;
+        const pct90 = (playerScores.filter(s => s >= 90).length / playerScores.length) * 100;
+        const pct100 = (playerScores.filter(s => s >= 100).length / playerScores.length) * 100;
+        const seasonRange = seasonAverages.length ? Math.max(...seasonAverages) - Math.min(...seasonAverages) : 0;
+
+        return {
+          player,
+          games: playerScores.length,
+          avg,
+          med,
+          vol,
+          pct80,
+          pct90,
+          pct100,
+          seasonRange
+        };
+      });
+
+      const avgNorm = minMax(rows.map(r => r.avg));
+      const gamesNorm = minMax(rows.map(r => r.games));
+      const pct90Norm = minMax(rows.map(r => r.pct90));
+      const pct100Norm = minMax(rows.map(r => r.pct100));
+      const volNorm = minMax(rows.map(r => r.vol));
+      const rangeNorm = minMax(rows.map(r => r.seasonRange));
+
+      rows = rows.map((r, i) => ({
+        ...r,
+        consistencyScore:
+          0.35 * avgNorm[i] +
+          0.20 * gamesNorm[i] +
+          0.15 * pct90Norm[i] +
+          0.10 * pct100Norm[i] +
+          0.10 * (1 - volNorm[i]) +
+          0.10 * (1 - rangeNorm[i])
+      }));
+
+      const minGames = Number(minGamesSelect.value || 30);
+
+      rows = rows
+        .filter(r => r.games >= minGames)
+        .sort((a, b) => b.consistencyScore - a.consistencyScore);
+
+      rankedPlayers = rows;
+
+      consistencyTableBody.innerHTML = rows.length ? rows.slice(0, 30).map(r => `
+        <tr>
+          <td>${r.player}</td>
+          <td>${r.games}</td>
+          <td>${r.avg.toFixed(1)}</td>
+          <td>${r.med.toFixed(1)}</td>
+          <td>${r.vol.toFixed(1)}</td>
+          <td>${r.pct80.toFixed(1)}%</td>
+          <td>${r.pct90.toFixed(1)}%</td>
+          <td>${r.pct100.toFixed(1)}%</td>
+          <td>${r.seasonRange.toFixed(1)}</td>
+          <td>${r.consistencyScore.toFixed(3)}</td>
+        </tr>
+      `).join("") : '<tr><td colspan="10">No players match the minimum games filter.</td></tr>';
+    }
+
+    function filterPlayerList() {
+      const search = playerSearch.value.trim().toLowerCase();
+      const players = [...new Set(allData.map(row => row.Player).filter(Boolean))].sort();
+      const filtered = players.filter(p => p.toLowerCase().includes(search));
+
+      playerSelect.innerHTML = "";
+
+      filtered.forEach(player => {
+        const option = document.createElement("option");
+        option.value = player;
+        option.textContent = player;
+        playerSelect.appendChild(option);
+      });
+
+      if (filtered.length > 0) {
+        playerSelect.value = filtered[0];
+        renderChart();
+      }
+    }
+
+    playerSearch.addEventListener("input", filterPlayerList);
+    playerSelect.addEventListener("change", renderChart);
+    seasonSelect.addEventListener("change", renderChart);
+    minGamesSelect.addEventListener("change", () => calculateConsistencyTable(allData));
 
     async function loadCsv() {
       try {
         const response = await fetch(CSV_PATH);
-
         if (!response.ok) {
           throw new Error(`Could not load ${CSV_PATH}. Make sure it is in the same GitHub repo as index.html.`);
         }
 
         const text = await response.text();
-
-        // Remove UTF-8 BOM if present
         const cleanedText = text.replace(/^\uFEFF/, "");
 
         const parsed = Papa.parse(cleanedText, {
@@ -426,30 +572,21 @@
 
         let data = parsed.data;
 
-        console.log("Parsed headers:", parsed.meta.fields);
-        console.log("Raw parsed data:", data);
-
         if (!data || !data.length) {
           throw new Error("CSV parsed, but no rows were found.");
         }
 
-        // Normalize keys and values
         data = data.map(row => {
           const cleaned = {};
-
           for (const key in row) {
             if (!Object.prototype.hasOwnProperty.call(row, key)) continue;
-
             const cleanKey = String(key).trim().replace(/^\uFEFF/, "");
             const value = row[key];
-
             cleaned[cleanKey] = typeof value === "string" ? value.trim() : value;
           }
-
           return cleaned;
         });
 
-        // Keep rows if required fields exist
         data = data.filter(row => {
           return (
             row["MatchId"] !== undefined &&
@@ -461,10 +598,8 @@
           );
         });
 
-        // Convert to final format
         data = data.map(row => {
           const parsedMatch = parseMatchId(row["MatchId"]);
-
           return {
             ...row,
             MatchId: String(row["MatchId"]).trim(),
@@ -477,8 +612,6 @@
           };
         }).filter(row => !isNaN(row.DreamTeamPoints));
 
-        console.log("Cleaned data:", data);
-
         if (!data.length) {
           throw new Error("No valid rows found after cleaning.");
         }
@@ -487,14 +620,14 @@
 
         buildPlayerOptions(allData);
         buildSeasonOptions(allData);
+        calculateConsistencyTable(allData);
 
         status.textContent = "CSV loaded successfully.";
         status.className = "loading";
         stats.style.display = "grid";
         showMessage("");
 
-        renderCharts();
-
+        renderChart();
       } catch (err) {
         console.error(err);
         status.textContent = "";
