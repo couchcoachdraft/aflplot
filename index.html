@@ -198,11 +198,12 @@
 
     function parseMatchId(matchId) {
       const s = String(matchId).trim();
-      const year = s.slice(0, 4);
-      const round = s.slice(4, 6);
+      const year = s.substring(0, 4);
+      const round = s.substring(4, 6);
+
       return {
-        year: year,
-        round: round,
+        year,
+        round,
         yearRound: `${year}-R${round}`
       };
     }
@@ -298,7 +299,7 @@
 
     function updateStats(points) {
       document.getElementById("gamesStat").textContent = points.length;
-      document.getElementById("avgStat").textContent = points.length ? (points.reduce((a,b) => a+b, 0) / points.length).toFixed(1) : "-";
+      document.getElementById("avgStat").textContent = points.length ? (points.reduce((a, b) => a + b, 0) / points.length).toFixed(1) : "-";
       document.getElementById("medianStat").textContent = points.length ? median(points).toFixed(1) : "-";
       document.getElementById("volStat").textContent = points.length ? stdDev(points).toFixed(1) : "-";
     }
@@ -373,6 +374,7 @@
 
       Plotly.newPlot("chart", lineData, lineLayout, { responsive: true });
 
+      // Stock-style candlestick chart using synthetic OHLC from the scores
       const open = y.map((val, i) => i === 0 ? val : y[i - 1]);
       const high = y.map((val, i) => Math.max(val, open[i]));
       const low = y.map((val, i) => Math.min(val, open[i]));
@@ -404,90 +406,101 @@
     seasonSelect.addEventListener("change", renderCharts);
 
     async function loadCsv() {
-  try {
-    const response = await fetch(CSV_PATH);
+      try {
+        const response = await fetch(CSV_PATH);
 
-    if (!response.ok) {
-      throw new Error(`Could not load ${CSV_PATH}. Check the file name and path.`);
+        if (!response.ok) {
+          throw new Error(`Could not load ${CSV_PATH}. Make sure it is in the same GitHub repo as index.html.`);
+        }
+
+        const text = await response.text();
+
+        // Remove UTF-8 BOM if present
+        const cleanedText = text.replace(/^\uFEFF/, "");
+
+        const parsed = Papa.parse(cleanedText, {
+          header: true,
+          skipEmptyLines: true,
+          delimiter: ","
+        });
+
+        let data = parsed.data;
+
+        console.log("Parsed headers:", parsed.meta.fields);
+        console.log("Raw parsed data:", data);
+
+        if (!data || !data.length) {
+          throw new Error("CSV parsed, but no rows were found.");
+        }
+
+        // Normalize keys and values
+        data = data.map(row => {
+          const cleaned = {};
+
+          for (const key in row) {
+            if (!Object.prototype.hasOwnProperty.call(row, key)) continue;
+
+            const cleanKey = String(key).trim().replace(/^\uFEFF/, "");
+            const value = row[key];
+
+            cleaned[cleanKey] = typeof value === "string" ? value.trim() : value;
+          }
+
+          return cleaned;
+        });
+
+        // Keep rows if required fields exist
+        data = data.filter(row => {
+          return (
+            row["MatchId"] !== undefined &&
+            row["Player"] !== undefined &&
+            row["DreamTeamPoints"] !== undefined &&
+            String(row["MatchId"]).trim() !== "" &&
+            String(row["Player"]).trim() !== "" &&
+            String(row["DreamTeamPoints"]).trim() !== ""
+          );
+        });
+
+        // Convert to final format
+        data = data.map(row => {
+          const parsedMatch = parseMatchId(row["MatchId"]);
+
+          return {
+            ...row,
+            MatchId: String(row["MatchId"]).trim(),
+            Player: String(row["Player"]).trim(),
+            Team: row["Team"] ? String(row["Team"]).trim() : "",
+            DreamTeamPoints: Number(row["DreamTeamPoints"]),
+            Year: parsedMatch.year,
+            Round: parsedMatch.round,
+            yearRoundLabel: parsedMatch.yearRound
+          };
+        }).filter(row => !isNaN(row.DreamTeamPoints));
+
+        console.log("Cleaned data:", data);
+
+        if (!data.length) {
+          throw new Error("No valid rows found after cleaning.");
+        }
+
+        allData = data;
+
+        buildPlayerOptions(allData);
+        buildSeasonOptions(allData);
+
+        status.textContent = "CSV loaded successfully.";
+        status.className = "loading";
+        stats.style.display = "grid";
+        showMessage("");
+
+        renderCharts();
+
+      } catch (err) {
+        console.error(err);
+        status.textContent = "";
+        showMessage(err.message || "Failed to load CSV.");
+      }
     }
-
-    const text = await response.text();
-
-    const parsed = Papa.parse(text, {
-      header: true,
-      skipEmptyLines: true,
-      delimiter: ","
-    });
-
-    let data = parsed.data;
-
-    console.log("Raw parsed rows:", data);
-    console.log("Parsed headers:", parsed.meta.fields);
-
-    if (!data || !data.length) {
-      throw new Error("CSV parsed, but no rows were found.");
-    }
-
-    // Clean column names and values
-    data = data.map(row => {
-      const cleaned = {};
-      Object.keys(row).forEach(key => {
-        const cleanKey = key ? key.trim() : key;
-        cleaned[cleanKey] = typeof row[key] === "string" ? row[key].trim() : row[key];
-      });
-      return cleaned;
-    });
-
-    // Keep only rows that have the required fields
-    data = data.filter(row =>
-      row.MatchId !== undefined &&
-      row.Player !== undefined &&
-      row.DreamTeamPoints !== undefined &&
-      row.Player !== "" &&
-      row.MatchId !== "" &&
-      row.DreamTeamPoints !== ""
-    );
-
-    // Convert and enrich rows
-    data = data.map(row => {
-      const parsedMatch = parseMatchId(row.MatchId);
-
-      return {
-        ...row,
-        MatchId: String(row.MatchId).trim(),
-        Player: String(row.Player).trim(),
-        Team: row.Team ? String(row.Team).trim() : "",
-        DreamTeamPoints: Number(row.DreamTeamPoints),
-        Year: parsedMatch.year,
-        Round: parsedMatch.round,
-        yearRoundLabel: parsedMatch.yearRound
-      };
-    }).filter(row => !isNaN(row.DreamTeamPoints));
-
-    console.log("Cleaned rows:", data);
-
-    if (!data.length) {
-      throw new Error("No valid rows found after cleaning. Check column names and values.");
-    }
-
-    allData = data;
-
-    buildPlayerOptions(allData);
-    buildSeasonOptions(allData);
-
-    status.textContent = "CSV loaded successfully.";
-    status.className = "loading";
-    stats.style.display = "grid";
-    showMessage("");
-
-    renderCharts();
-
-  } catch (err) {
-    console.error(err);
-    status.textContent = "";
-    showMessage(err.message || "Failed to load CSV.");
-  }
-}
 
     loadCsv();
   </script>
