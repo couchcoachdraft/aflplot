@@ -404,66 +404,90 @@
     seasonSelect.addEventListener("change", renderCharts);
 
     async function loadCsv() {
-      try {
-        const response = await fetch(CSV_PATH);
-        if (!response.ok) {
-          throw new Error(`Could not load ${CSV_PATH}. Make sure it is in the same GitHub repo as index.html.`);
-        }
+  try {
+    const response = await fetch(CSV_PATH);
 
-        const text = await response.text();
-
-        const parsed = Papa.parse(text, {
-          header: true,
-          skipEmptyLines: true
-        });
-
-        let data = parsed.data;
-
-        data = data.map(row => {
-          const cleaned = {};
-          Object.keys(row).forEach(key => {
-            cleaned[key.trim()] = typeof row[key] === "string" ? row[key].trim() : row[key];
-          });
-          return cleaned;
-        });
-
-        data = data.filter(row => row.Player && row.MatchId && row.DreamTeamPoints !== undefined && row.DreamTeamPoints !== "");
-
-        data = data.map(row => {
-          const parsedMatch = parseMatchId(row.MatchId);
-          return {
-            ...row,
-            MatchId: String(row.MatchId).trim(),
-            Player: String(row.Player).trim(),
-            Team: row.Team ? String(row.Team).trim() : "",
-            DreamTeamPoints: Number(row.DreamTeamPoints),
-            Year: parsedMatch.year,
-            Round: parsedMatch.round,
-            yearRoundLabel: parsedMatch.yearRound
-          };
-        }).filter(row => !isNaN(row.DreamTeamPoints));
-
-        if (!data.length) {
-          throw new Error("No valid rows found in the CSV.");
-        }
-
-        allData = data;
-
-        buildPlayerOptions(allData);
-        buildSeasonOptions(allData);
-
-        status.textContent = "CSV loaded successfully.";
-        status.className = "loading";
-        stats.style.display = "grid";
-        showMessage("");
-
-        renderCharts();
-      } catch (err) {
-        console.error(err);
-        status.textContent = "";
-        showMessage(err.message || "Failed to load CSV.");
-      }
+    if (!response.ok) {
+      throw new Error(`Could not load ${CSV_PATH}. Check the file name and path.`);
     }
+
+    const text = await response.text();
+
+    const parsed = Papa.parse(text, {
+      header: true,
+      skipEmptyLines: true,
+      delimiter: ","
+    });
+
+    let data = parsed.data;
+
+    console.log("Raw parsed rows:", data);
+    console.log("Parsed headers:", parsed.meta.fields);
+
+    if (!data || !data.length) {
+      throw new Error("CSV parsed, but no rows were found.");
+    }
+
+    // Clean column names and values
+    data = data.map(row => {
+      const cleaned = {};
+      Object.keys(row).forEach(key => {
+        const cleanKey = key ? key.trim() : key;
+        cleaned[cleanKey] = typeof row[key] === "string" ? row[key].trim() : row[key];
+      });
+      return cleaned;
+    });
+
+    // Keep only rows that have the required fields
+    data = data.filter(row =>
+      row.MatchId !== undefined &&
+      row.Player !== undefined &&
+      row.DreamTeamPoints !== undefined &&
+      row.Player !== "" &&
+      row.MatchId !== "" &&
+      row.DreamTeamPoints !== ""
+    );
+
+    // Convert and enrich rows
+    data = data.map(row => {
+      const parsedMatch = parseMatchId(row.MatchId);
+
+      return {
+        ...row,
+        MatchId: String(row.MatchId).trim(),
+        Player: String(row.Player).trim(),
+        Team: row.Team ? String(row.Team).trim() : "",
+        DreamTeamPoints: Number(row.DreamTeamPoints),
+        Year: parsedMatch.year,
+        Round: parsedMatch.round,
+        yearRoundLabel: parsedMatch.yearRound
+      };
+    }).filter(row => !isNaN(row.DreamTeamPoints));
+
+    console.log("Cleaned rows:", data);
+
+    if (!data.length) {
+      throw new Error("No valid rows found after cleaning. Check column names and values.");
+    }
+
+    allData = data;
+
+    buildPlayerOptions(allData);
+    buildSeasonOptions(allData);
+
+    status.textContent = "CSV loaded successfully.";
+    status.className = "loading";
+    stats.style.display = "grid";
+    showMessage("");
+
+    renderCharts();
+
+  } catch (err) {
+    console.error(err);
+    status.textContent = "";
+    showMessage(err.message || "Failed to load CSV.");
+  }
+}
 
     loadCsv();
   </script>
