@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AFL Fantasy Score Tracker</title>
+
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      background: #f7f7f7;
+      color: #222;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      background: white;
+      padding: 20px;
+      border-radius: 12px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+    }
+
+    h1 {
+      margin-top: 0;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    label {
+      font-weight: bold;
+    }
+
+    select {
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      font-size: 14px;
+      width: 100%;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 15px;
+      margin: 20px 0;
+    }
+
+    .stat-card {
+      background: #f2f5f9;
+      padding: 15px;
+      border-radius: 10px;
+      text-align: center;
+    }
+
+    .stat-card .label {
+      font-size: 13px;
+      color: #555;
+    }
+
+    .stat-card .value {
+      font-size: 24px;
+      font-weight: bold;
+      margin-top: 6px;
+    }
+
+    #chart, #candleChart {
+      width: 100%;
+      height: 500px;
+      margin-top: 20px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 20px;
+      font-size: 14px;
+    }
+
+    th, td {
+      padding: 8px 10px;
+      border-bottom: 1px solid #ddd;
+      text-align: left;
+    }
+
+    th {
+      background: #f2f5f9;
+    }
+
+    .hint {
+      color: #666;
+      font-size: 14px;
+      margin-bottom: 10px;
+    }
+
+    .error {
+      color: #b00020;
+      font-weight: bold;
+      margin-top: 10px;
+    }
+
+    .loading {
+      color: #0b57d0;
+      font-weight: bold;
+      margin-top: 10px;
+    }
+
+    @media (max-width: 900px) {
+      .controls, .stats {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>AFL Fantasy Score Tracker</h1>
+    <p class="hint">
+      This page loads your CSV automatically from the GitHub repo and shows DreamTeamPoints trends by player.
+    </p>
+
+    <div id="status" class="loading">Loading CSV data...</div>
+    <div id="message" class="error"></div>
+
+    <div class="controls">
+      <div class="control-group">
+        <label for="playerSelect">Choose Player</label>
+        <select id="playerSelect" disabled>
+          <option value="">Loading...</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label for="seasonSelect">Choose Season</label>
+        <select id="seasonSelect" disabled>
+          <option value="all">All Seasons</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="stats" id="stats" style="display:none;">
+      <div class="stat-card">
+        <div class="label">Games</div>
+        <div class="value" id="gamesStat">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Average</div>
+        <div class="value" id="avgStat">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Median</div>
+        <div class="value" id="medianStat">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Volatility</div>
+        <div class="value" id="volStat">-</div>
+      </div>
+    </div>
+
+    <div id="chart"></div>
+    <div id="candleChart"></div>
+
+    <h2>Player Match History</h2>
+    <div id="tableContainer"></div>
+  </div>
+
+  <script>
+    // Change this if your CSV has a different name or path
+    const CSV_PATH = "afl_fantasy_data.csv";
+
+    let allData = [];
+
+    const playerSelect = document.getElementById("playerSelect");
+    const seasonSelect = document.getElementById("seasonSelect");
+    const message = document.getElementById("message");
+    const status = document.getElementById("status");
+    const stats = document.getElementById("stats");
+    const tableContainer = document.getElementById("tableContainer");
+
+    function showMessage(text) {
+      message.textContent = text || "";
+    }
+
+    function parseMatchId(matchId) {
+      const s = String(matchId).trim();
+      const year = s.slice(0, 4);
+      const round = s.slice(4, 6);
+      return {
+        year: year,
+        round: round,
+        yearRound: `${year}-R${round}`
+      };
+    }
+
+    function rollingMean(values, windowSize) {
+      const result = [];
+      for (let i = 0; i < values.length; i++) {
+        const start = Math.max(0, i - windowSize + 1);
+        const window = values.slice(start, i + 1);
+        const avg = window.reduce((a, b) => a + b, 0) / window.length;
+        result.push(avg);
+      }
+      return result;
+    }
+
+    function median(arr) {
+      if (!arr.length) return 0;
+      const sorted = [...arr].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 === 0
+        ? (sorted[mid - 1] + sorted[mid]) / 2
+        : sorted[mid];
+    }
+
+    function stdDev(arr) {
+      if (arr.length < 2) return 0;
+      const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+      const variance = arr.reduce((sum, x) => sum + Math.pow(x - mean, 2), 0) / arr.length;
+      return Math.sqrt(variance);
+    }
+
+    function buildPlayerOptions(data) {
+      const players = [...new Set(data.map(row => row.Player).filter(Boolean))].sort();
+      playerSelect.innerHTML = "";
+
+      players.forEach(player => {
+        const option = document.createElement("option");
+        option.value = player;
+        option.textContent = player;
+        playerSelect.appendChild(option);
+      });
+
+      playerSelect.disabled = false;
+      if (players.length > 0) {
+        playerSelect.value = players[0];
+      }
+    }
+
+    function buildSeasonOptions(data) {
+      const seasons = [...new Set(data.map(row => row.Year).filter(Boolean))].sort();
+      seasonSelect.innerHTML = '<option value="all">All Seasons</option>';
+
+      seasons.forEach(season => {
+        const option = document.createElement("option");
+        option.value = season;
+        option.textContent = season;
+        seasonSelect.appendChild(option);
+      });
+
+      seasonSelect.disabled = false;
+      seasonSelect.value = "all";
+    }
+
+    function renderTable(playerRows) {
+      if (!playerRows.length) {
+        tableContainer.innerHTML = "<p>No data available.</p>";
+        return;
+      }
+
+      const headers = ["MatchId", "Year", "Round", "Player", "Team", "DreamTeamPoints"];
+      let html = "<table><thead><tr>";
+
+      headers.forEach(h => {
+        html += `<th>${h}</th>`;
+      });
+
+      html += "</tr></thead><tbody>";
+
+      playerRows.forEach(row => {
+        html += "<tr>";
+        html += `<td>${row.MatchId ?? ""}</td>`;
+        html += `<td>${row.Year ?? ""}</td>`;
+        html += `<td>${row.Round ?? ""}</td>`;
+        html += `<td>${row.Player ?? ""}</td>`;
+        html += `<td>${row.Team ?? ""}</td>`;
+        html += `<td>${row.DreamTeamPoints ?? ""}</td>`;
+        html += "</tr>";
+      });
+
+      html += "</tbody></table>";
+      tableContainer.innerHTML = html;
+    }
+
+    function updateStats(points) {
+      document.getElementById("gamesStat").textContent = points.length;
+      document.getElementById("avgStat").textContent = points.length ? (points.reduce((a,b) => a+b, 0) / points.length).toFixed(1) : "-";
+      document.getElementById("medianStat").textContent = points.length ? median(points).toFixed(1) : "-";
+      document.getElementById("volStat").textContent = points.length ? stdDev(points).toFixed(1) : "-";
+    }
+
+    function renderCharts() {
+      const selectedPlayer = playerSelect.value;
+      const selectedSeason = seasonSelect.value;
+
+      let rows = allData.filter(r => r.Player === selectedPlayer);
+
+      if (selectedSeason !== "all") {
+        rows = rows.filter(r => r.Year === selectedSeason);
+      }
+
+      rows = rows.sort((a, b) => {
+        if (a.Year !== b.Year) return a.Year.localeCompare(b.Year);
+        return a.Round.localeCompare(b.Round);
+      });
+
+      const x = rows.map(r => r.yearRoundLabel);
+      const y = rows.map(r => r.DreamTeamPoints);
+
+      const rolling3 = rollingMean(y, 3);
+      const rolling5 = rollingMean(y, 5);
+      const rolling8 = rollingMean(y, 8);
+
+      updateStats(y);
+      renderTable(rows);
+
+      const lineData = [
+        {
+          x,
+          y,
+          type: "scatter",
+          mode: "lines+markers",
+          name: "DreamTeamPoints",
+          line: { width: 2 }
+        },
+        {
+          x,
+          y: rolling3,
+          type: "scatter",
+          mode: "lines",
+          name: "3-game average",
+          line: { width: 2, dash: "dot" }
+        },
+        {
+          x,
+          y: rolling5,
+          type: "scatter",
+          mode: "lines",
+          name: "5-game average",
+          line: { width: 2, dash: "dash" }
+        },
+        {
+          x,
+          y: rolling8,
+          type: "scatter",
+          mode: "lines",
+          name: "8-game average",
+          line: { width: 2, dash: "longdash" }
+        }
+      ];
+
+      const lineLayout = {
+        title: `${selectedPlayer} - DreamTeamPoints Trend`,
+        xaxis: { title: "Year-Round" },
+        yaxis: { title: "DreamTeamPoints" },
+        template: "plotly_white",
+        hovermode: "x unified"
+      };
+
+      Plotly.newPlot("chart", lineData, lineLayout, { responsive: true });
+
+      const open = y.map((val, i) => i === 0 ? val : y[i - 1]);
+      const high = y.map((val, i) => Math.max(val, open[i]));
+      const low = y.map((val, i) => Math.min(val, open[i]));
+      const close = y;
+
+      const candleData = [
+        {
+          x,
+          open,
+          high,
+          low,
+          close,
+          type: "candlestick",
+          name: selectedPlayer
+        }
+      ];
+
+      const candleLayout = {
+        title: `${selectedPlayer} - Stock Style Score Chart`,
+        xaxis: { title: "Year-Round" },
+        yaxis: { title: "DreamTeamPoints" },
+        template: "plotly_white"
+      };
+
+      Plotly.newPlot("candleChart", candleData, candleLayout, { responsive: true });
+    }
+
+    playerSelect.addEventListener("change", renderCharts);
+    seasonSelect.addEventListener("change", renderCharts);
+
+    async function loadCsv() {
+      try {
+        const response = await fetch(CSV_PATH);
+        if (!response.ok) {
+          throw new Error(`Could not load ${CSV_PATH}. Make sure it is in the same GitHub repo as index.html.`);
+        }
+
+        const text = await response.text();
+
+        const parsed = Papa.parse(text, {
+          header: true,
+          skipEmptyLines: true
+        });
+
+        let data = parsed.data;
+
+        data = data.map(row => {
+          const cleaned = {};
+          Object.keys(row).forEach(key => {
+            cleaned[key.trim()] = typeof row[key] === "string" ? row[key].trim() : row[key];
+          });
+          return cleaned;
+        });
+
+        data = data.filter(row => row.Player && row.MatchId && row.DreamTeamPoints !== undefined && row.DreamTeamPoints !== "");
+
+        data = data.map(row => {
+          const parsedMatch = parseMatchId(row.MatchId);
+          return {
+            ...row,
+            MatchId: String(row.MatchId).trim(),
+            Player: String(row.Player).trim(),
+            Team: row.Team ? String(row.Team).trim() : "",
+            DreamTeamPoints: Number(row.DreamTeamPoints),
+            Year: parsedMatch.year,
+            Round: parsedMatch.round,
+            yearRoundLabel: parsedMatch.yearRound
+          };
+        }).filter(row => !isNaN(row.DreamTeamPoints));
+
+        if (!data.length) {
+          throw new Error("No valid rows found in the CSV.");
+        }
+
+        allData = data;
+
+        buildPlayerOptions(allData);
+        buildSeasonOptions(allData);
+
+        status.textContent = "CSV loaded successfully.";
+        status.className = "loading";
+        stats.style.display = "grid";
+        showMessage("");
+
+        renderCharts();
+      } catch (err) {
+        console.error(err);
+        status.textContent = "";
+        showMessage(err.message || "Failed to load CSV.");
+      }
+    }
+
+    loadCsv();
+  </script>
+</body>
+</html>
